@@ -121,6 +121,16 @@ class CombinedLoss(nn.Module):
         x_hat: torch.Tensor,
         likelihoods: torch.Tensor
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        # Add gradient clipping
+        likelihoods = torch.clamp(likelihoods, min=1e-10, max=1.0)
+        
+        # Use more stable PSNR calculation
+        mse = F.mse_loss(x_hat, x)
+        psnr = -10 * torch.log10(mse + 1e-10)
+        
+        # Add more stable rate loss
+        rate_loss = -torch.log2(likelihoods + 1e-10).mean()
+        
         # Distortion losses
         mse_loss = F.mse_loss(x_hat, x)
         ms_ssim_loss = self.ms_ssim_loss(x_hat, x)
@@ -128,15 +138,12 @@ class CombinedLoss(nn.Module):
         # Combined distortion loss
         distortion_loss = self.alpha * ms_ssim_loss + self.beta * mse_loss
         
-        # Rate loss
-        rate_loss = -torch.log2(likelihoods).mean()
-        
         # Total loss
         total_loss = distortion_loss + self.lambda_factor * rate_loss
         
         # Calculate metrics
-        psnr = 10 * torch.log10(1.0 / mse_loss)
-        bpp = rate_loss / (x.shape[2] * x.shape[3])
+        #psnr = 10 * torch.log10(1.0 / mse_loss)
+        #bpp = rate_loss / (x.shape[2] * x.shape[3])
         
         metrics = {
             'mse_loss': mse_loss.item(),
@@ -145,7 +152,7 @@ class CombinedLoss(nn.Module):
             'rate_loss': rate_loss.item(),
             'total_loss': total_loss.item(),
             'psnr': psnr.item(),
-            'bpp': bpp.item()
+            'bpp': rate_loss / (x.size(0) * x.size(2) * x.size(3))
         }
         
         return total_loss, metrics 

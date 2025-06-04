@@ -6,7 +6,7 @@ from typing import Dict, Optional
 import torch
 import torch.nn as nn
 from torch.optim import Adam
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -53,22 +53,39 @@ def save_checkpoint(
     
     torch.save(checkpoint, checkpoint_dir / f'checkpoint_epoch_{epoch}.pt')
 
+def get_warmup_scheduler(optimizer, warmup_epochs, total_steps_per_epoch):
+    """Create a learning rate scheduler with warmup"""
+    warmup_steps = warmup_epochs * total_steps_per_epoch
+    warmup_scheduler = LinearLR(
+        optimizer,
+        start_factor=0.1,
+        end_factor=1.0,
+        total_iters=warmup_steps
+    )
+    return warmup_scheduler
+
 def train_epoch(
     model: nn.Module,
     train_loader: torch.utils.data.DataLoader,
     criterion: nn.Module,
     optimizer: torch.optim.Optimizer,
+    warmup_scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
+    main_scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
     device: torch.device,
     epoch: int,
-    logger: logging.Logger
+    logger: logging.Logger,
+    writer: SummaryWriter,
+    max_grad_norm: float = 1.0
 ) -> Dict[str, float]:
     """Train for one epoch"""
     model.train()
     epoch_metrics = {}
+    total_steps = len(train_loader)
     
     pbar = tqdm(train_loader, desc=f'Epoch {epoch}')
     for batch_idx, x in enumerate(pbar):
         x = x.to(device)
+        current_step = epoch * total_steps + batch_idx
         
         # Forward pass
         x_hat, likelihoods = model(x)
@@ -77,7 +94,24 @@ def train_epoch(
         # Backward pass
         optimizer.zero_grad()
         loss.backward()
+        
+        # Gradient clipping
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        
+        # Log gradient norm
+        writer.add_scalar('train/grad_norm', grad_norm, current_step)
+        
         optimizer.step()
+        
+        # Update learning rate
+        if warmup_scheduler is not None:
+            warmup_scheduler.step()
+        elif main_scheduler is not None:
+            main_scheduler.step()
+        
+        # Log learning rate
+        current_lr = optimizer.param_groups[0]['lr']
+        writer.add_scalar('train/learning_rate', current_lr, current_step)
         
         # Update metrics
         for k, v in metrics.items():
@@ -87,7 +121,9 @@ def train_epoch(
         pbar.set_postfix({
             'loss': f'{loss.item():.4f}',
             'psnr': f'{metrics["psnr"]:.2f}',
-            'bpp': f'{metrics["bpp"]:.4f}'
+            'bpp': f'{metrics["bpp"]:.4f}',
+            'grad_norm': f'{grad_norm:.2f}',
+            'lr': f'{current_lr:.2e}'
         })
     
     # Average metrics
@@ -149,16 +185,25 @@ def main():
     # Create loss function
     criterion = CombinedLoss(lambda_factor=config.lambda_factor)
     
-    # Create optimizer and scheduler
+    # Create optimizer
     optimizer = Adam(
         model.parameters(),
         lr=config.learning_rate,
-        weight_decay=config.weight_decay
+        weight_decay=config.weight_decay,
+        betas=(0.9, 0.999)  # Standard Adam betas
     )
     
-    scheduler = CosineAnnealingLR(
+    # Create schedulers
+    total_steps_per_epoch = len(train_loader)
+    warmup_scheduler = get_warmup_scheduler(
         optimizer,
-        T_max=config.num_epochs,
+        warmup_epochs=config.warmup_epochs,
+        total_steps_per_epoch=total_steps_per_epoch
+    )
+    
+    main_scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=config.num_epochs * total_steps_per_epoch - config.warmup_epochs * total_steps_per_epoch,
         eta_min=config.learning_rate * 0.01
     )
     
@@ -167,14 +212,21 @@ def main():
     for epoch in range(config.num_epochs):
         # Train
         train_metrics = train_epoch(
-            model, train_loader, criterion, optimizer, device, epoch, logger
+            model=model,
+            train_loader=train_loader,
+            criterion=criterion,
+            optimizer=optimizer,
+            warmup_scheduler=warmup_scheduler if epoch < config.warmup_epochs else None,
+            main_scheduler=main_scheduler if epoch >= config.warmup_epochs else None,
+            device=device,
+            epoch=epoch,
+            logger=logger,
+            writer=writer,
+            max_grad_norm=1.0
         )
         
         # Validate
         val_metrics = validate(model, val_loader, criterion, device, logger)
-        
-        # Update learning rate
-        scheduler.step()
         
         # Log metrics
         for k, v in train_metrics.items():
@@ -182,17 +234,14 @@ def main():
         for k, v in val_metrics.items():
             writer.add_scalar(f'val/{k}', v, epoch)
         
-        # Log learning rate
-        writer.add_scalar('train/lr', scheduler.get_last_lr()[0], epoch)
-        
         # Save checkpoint
         if (epoch + 1) % config.save_freq == 0:
-            save_checkpoint(model, optimizer, scheduler, epoch, val_metrics, config)
+            save_checkpoint(model, optimizer, main_scheduler, epoch, val_metrics, config)
         
         # Save best model
         if val_metrics['total_loss'] < best_val_loss:
             best_val_loss = val_metrics['total_loss']
-            save_checkpoint(model, optimizer, scheduler, epoch, val_metrics, config)
+            save_checkpoint(model, optimizer, main_scheduler, epoch, val_metrics, config)
             logger.info(f"New best model saved with validation loss: {best_val_loss:.4f}")
         
         # Log epoch summary

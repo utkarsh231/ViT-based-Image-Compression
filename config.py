@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Tuple, Optional
+import torch
 
 @dataclass
 class CompressionConfig:
@@ -20,9 +21,10 @@ class CompressionConfig:
     learning_rate: float = 1e-4
     weight_decay: float = 1e-4
     warmup_epochs: int = 5
+    lambda_factor: float = 0.01  # Rate-distortion trade-off
+    max_grad_norm: float = 1.0  # Added gradient clipping norm
     
     # Compression
-    lambda_factor: float = 0.01  # Rate-distortion trade-off
     num_entropy_bins: int = 256  # For entropy modeling
     
     # Dataset
@@ -36,7 +38,7 @@ class CompressionConfig:
     save_freq: int = 5  # Save checkpoint every N epochs
     
     # Device
-    device: str = "cuda"  # or "cpu"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
     
     # Entropy Model
     entropy_model_type: str = "gaussian"  # Options: "gaussian", "laplace", "hyperprior"
