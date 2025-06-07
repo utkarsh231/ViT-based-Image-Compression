@@ -1,39 +1,59 @@
 import os
-import time
 import logging
-from pathlib import Path
-from typing import Dict, Optional
 import torch
 import torch.nn as nn
 from torch.optim import Adam
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.tensorboard import SummaryWriter
+from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
-
+from pathlib import Path
+from typing import Dict, Optional, Tuple
+import wandb
 from config import CompressionConfig
 from dataset import get_dataloaders
-from loss import CombinedLoss
 from tic_vit_encoder import ViTCompressor
+from loss import CombinedLoss
 
 def setup_logging(config: CompressionConfig) -> logging.Logger:
     """Setup logging configuration"""
-    log_dir = Path(config.log_dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
     
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_dir / 'training.log'),
-            logging.StreamHandler()
-        ]
+    # Create handlers
+    c_handler = logging.StreamHandler()
+    f_handler = logging.FileHandler(os.path.join(config.log_dir, 'training.log'))
+    
+    # Create formatters and add it to handlers
+    log_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    c_handler.setFormatter(log_format)
+    f_handler.setFormatter(log_format)
+    
+    # Add handlers to the logger
+    logger.addHandler(c_handler)
+    logger.addHandler(f_handler)
+    
+    return logger
+
+def get_warmup_scheduler(
+    optimizer: torch.optim.Optimizer,
+    warmup_epochs: int,
+    total_steps_per_epoch: int
+) -> torch.optim.lr_scheduler._LRScheduler:
+    """Create warmup scheduler"""
+    from torch.optim.lr_scheduler import LinearLR
+    return LinearLR(
+        optimizer,
+        start_factor=0.1,
+        end_factor=1.0,
+        total_iters=warmup_epochs * total_steps_per_epoch
     )
-    return logging.getLogger(__name__)
 
 def save_checkpoint(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler._LRScheduler,
+    scaler: GradScaler,
     epoch: int,
     metrics: Dict[str, float],
     config: CompressionConfig
@@ -47,35 +67,26 @@ def save_checkpoint(
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
+        'scaler_state_dict': scaler.state_dict(),
         'metrics': metrics,
         'config': config
     }
     
     torch.save(checkpoint, checkpoint_dir / f'checkpoint_epoch_{epoch}.pt')
 
-def get_warmup_scheduler(optimizer, warmup_epochs, total_steps_per_epoch):
-    """Create a learning rate scheduler with warmup"""
-    warmup_steps = warmup_epochs * total_steps_per_epoch
-    warmup_scheduler = LinearLR(
-        optimizer,
-        start_factor=0.1,
-        end_factor=1.0,
-        total_iters=warmup_steps
-    )
-    return warmup_scheduler
-
 def train_epoch(
     model: nn.Module,
     train_loader: torch.utils.data.DataLoader,
     criterion: nn.Module,
     optimizer: torch.optim.Optimizer,
+    scaler: GradScaler,
     warmup_scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
     main_scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
     device: torch.device,
     epoch: int,
     logger: logging.Logger,
     writer: SummaryWriter,
-    max_grad_norm: float = 1.0
+    config: CompressionConfig
 ) -> Dict[str, float]:
     """Train for one epoch"""
     model.train()
@@ -84,24 +95,25 @@ def train_epoch(
     
     pbar = tqdm(train_loader, desc=f'Epoch {epoch}')
     for batch_idx, x in enumerate(pbar):
-        x = x.to(device)
+        x = x.to(device, non_blocking=True)
         current_step = epoch * total_steps + batch_idx
         
-        # Forward pass
-        x_hat, likelihoods = model(x)
-        loss, metrics = criterion(x, x_hat, likelihoods)
+        # Forward pass with mixed precision
+        with autocast(enabled=config.use_amp):
+            x_hat, likelihoods = model(x)
+            loss, metrics = criterion(x, x_hat, likelihoods)
         
-        # Backward pass
-        optimizer.zero_grad()
-        loss.backward()
+        # Backward pass with gradient scaling
+        optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+        scaler.scale(loss).backward()
         
         # Gradient clipping
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        scaler.unscale_(optimizer)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
         
-        # Log gradient norm
-        writer.add_scalar('train/grad_norm', grad_norm, current_step)
-        
-        optimizer.step()
+        # Optimizer step with gradient scaling
+        scaler.step(optimizer)
+        scaler.update()
         
         # Update learning rate
         if warmup_scheduler is not None:
@@ -109,13 +121,15 @@ def train_epoch(
         elif main_scheduler is not None:
             main_scheduler.step()
         
-        # Log learning rate
+        # Log metrics
         current_lr = optimizer.param_groups[0]['lr']
         writer.add_scalar('train/learning_rate', current_lr, current_step)
+        writer.add_scalar('train/grad_norm', grad_norm, current_step)
         
         # Update metrics
         for k, v in metrics.items():
             epoch_metrics[k] = epoch_metrics.get(k, 0) + v
+            writer.add_scalar(f'train/{k}', v, current_step)
         
         # Update progress bar
         pbar.set_postfix({
@@ -125,6 +139,18 @@ def train_epoch(
             'grad_norm': f'{grad_norm:.2f}',
             'lr': f'{current_lr:.2e}'
         })
+        
+        # Log to wandb
+        if config.use_wandb:
+            wandb.log({
+                'train/loss': loss.item(),
+                'train/psnr': metrics['psnr'],
+                'train/bpp': metrics['bpp'],
+                'train/grad_norm': grad_norm,
+                'train/learning_rate': current_lr,
+                'epoch': epoch,
+                'step': current_step
+            })
     
     # Average metrics
     for k in epoch_metrics:
@@ -138,23 +164,37 @@ def validate(
     val_loader: torch.utils.data.DataLoader,
     criterion: nn.Module,
     device: torch.device,
-    logger: logging.Logger
+    logger: logging.Logger,
+    epoch: int,
+    writer: SummaryWriter,
+    config: CompressionConfig
 ) -> Dict[str, float]:
     """Validate the model"""
     model.eval()
     val_metrics = {}
     
-    for x in tqdm(val_loader, desc='Validation'):
-        x = x.to(device)
-        x_hat, likelihoods = model(x)
-        _, metrics = criterion(x, x_hat, likelihoods)
+    for batch_idx, x in enumerate(tqdm(val_loader, desc='Validation')):
+        x = x.to(device, non_blocking=True)
+        
+        with autocast(enabled=config.use_amp):
+            x_hat, likelihoods = model(x)
+            _, metrics = criterion(x, x_hat, likelihoods)
         
         for k, v in metrics.items():
             val_metrics[k] = val_metrics.get(k, 0) + v
+            writer.add_scalar(f'val/{k}', v, epoch * len(val_loader) + batch_idx)
     
     # Average metrics
     for k in val_metrics:
         val_metrics[k] /= len(val_loader)
+        writer.add_scalar(f'val/{k}_epoch', val_metrics[k], epoch)
+        
+        # Log to wandb
+        if config.use_wandb:
+            wandb.log({
+                f'val/{k}': val_metrics[k],
+                'epoch': epoch
+            })
     
     return val_metrics
 
@@ -162,6 +202,14 @@ def main():
     # Load configuration
     config = CompressionConfig()
     device = torch.device(config.device)
+    
+    # Initialize wandb
+    if config.use_wandb:
+        wandb.init(
+            project=config.project_name,
+            name=config.experiment_name,
+            config=vars(config)
+        )
     
     # Setup logging
     logger = setup_logging(config)
@@ -176,7 +224,9 @@ def main():
     model = ViTCompressor(
         img_size=config.img_size,
         patch_size=config.patch_size,
-        embed_dim=config.embed_dim
+        embed_dim=config.embed_dim,
+        depth=config.depth,
+        num_heads=config.num_heads
     ).to(device)
     
     # Create dataloaders
@@ -190,8 +240,11 @@ def main():
         model.parameters(),
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
-        betas=(0.9, 0.999)  # Standard Adam betas
+        betas=(0.9, 0.999)
     )
+    
+    # Create gradient scaler for mixed precision
+    scaler = GradScaler(enabled=config.use_amp)
     
     # Create schedulers
     total_steps_per_epoch = len(train_loader)
@@ -216,32 +269,52 @@ def main():
             train_loader=train_loader,
             criterion=criterion,
             optimizer=optimizer,
+            scaler=scaler,
             warmup_scheduler=warmup_scheduler if epoch < config.warmup_epochs else None,
             main_scheduler=main_scheduler if epoch >= config.warmup_epochs else None,
             device=device,
             epoch=epoch,
             logger=logger,
             writer=writer,
-            max_grad_norm=1.0
+            config=config
         )
         
         # Validate
-        val_metrics = validate(model, val_loader, criterion, device, logger)
-        
-        # Log metrics
-        for k, v in train_metrics.items():
-            writer.add_scalar(f'train/{k}', v, epoch)
-        for k, v in val_metrics.items():
-            writer.add_scalar(f'val/{k}', v, epoch)
+        val_metrics = validate(
+            model=model,
+            val_loader=val_loader,
+            criterion=criterion,
+            device=device,
+            logger=logger,
+            epoch=epoch,
+            writer=writer,
+            config=config
+        )
         
         # Save checkpoint
         if (epoch + 1) % config.save_freq == 0:
-            save_checkpoint(model, optimizer, main_scheduler, epoch, val_metrics, config)
+            save_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                scheduler=main_scheduler,
+                scaler=scaler,
+                epoch=epoch,
+                metrics=val_metrics,
+                config=config
+            )
         
         # Save best model
         if val_metrics['total_loss'] < best_val_loss:
             best_val_loss = val_metrics['total_loss']
-            save_checkpoint(model, optimizer, main_scheduler, epoch, val_metrics, config)
+            save_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                scheduler=main_scheduler,
+                scaler=scaler,
+                epoch=epoch,
+                metrics=val_metrics,
+                config=config
+            )
             logger.info(f"New best model saved with validation loss: {best_val_loss:.4f}")
         
         # Log epoch summary
@@ -256,6 +329,8 @@ def main():
         )
     
     writer.close()
+    if config.use_wandb:
+        wandb.finish()
     logger.info("Training completed!")
 
 if __name__ == '__main__':

@@ -60,40 +60,46 @@ class ImageCompressionDataset(Dataset):
 
 def get_dataloaders(
     config: 'CompressionConfig',
-    train_transform: Optional[transforms.Compose] = None,
-    val_transform: Optional[transforms.Compose] = None
-) -> Tuple[DataLoader, DataLoader]:
-    """
-    Create training and validation dataloaders.
-    """
+    pin_memory: bool = True,
+    num_workers: int = 4
+) -> Tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
+    """Create train and validation dataloaders with GPU optimizations."""
+    transform = transforms.Compose([
+        transforms.Resize((config.img_size, config.img_size)),
+        transforms.ToTensor(),
+    ])
+    
     train_dataset = ImageCompressionDataset(
         config.train_data_dir,
         img_size=config.img_size,
-        transform=train_transform,
+        transform=transform,
         is_train=True
     )
-    
     val_dataset = ImageCompressionDataset(
         config.val_data_dir,
         img_size=config.img_size,
-        transform=val_transform,
+        transform=transform,
         is_train=False
     )
     
-    train_loader = DataLoader(
+    train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=config.batch_size,
         shuffle=True,
-        num_workers=config.num_workers,
-        pin_memory=True
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=num_workers > 0,  # Keep workers alive between epochs
+        prefetch_factor=2 if num_workers > 0 else None  # Prefetch 2 batches per worker
     )
     
-    val_loader = DataLoader(
+    val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=config.batch_size,
         shuffle=False,
-        num_workers=config.num_workers,
-        pin_memory=True
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None
     )
     
     return train_loader, val_loader 
