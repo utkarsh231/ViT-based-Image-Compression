@@ -22,7 +22,7 @@ class CompressionConfig:
     learning_rate: float = 2e-4  # Slightly increased for faster convergence
     weight_decay: float = 1e-4
     warmup_epochs: int = 2  # Reduced warmup
-    lambda_factor: float = 0.01  # Rate-distortion trade-off
+    lambda_factor: float = 0.1  # Rate-distortion trade-off
     max_grad_norm: float = 1.0
     
     # Compression
@@ -51,7 +51,7 @@ class CompressionConfig:
     # Experiment Tracking
     use_wandb: bool = True
     project_name: str = "vit-compression"
-    experiment_name: str = "laptop-training"
+    experiment_name: str = "laptop-training-2"
     
     def __post_init__(self):
         assert self.img_size % self.patch_size == 0, "Image size must be divisible by patch size"

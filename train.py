@@ -231,7 +231,7 @@ def main():
     train_loader, val_loader = get_dataloaders(config)
     
     # Create loss function
-    criterion = CombinedLoss(lambda_factor=config.lambda_factor)
+    criterion = CombinedLoss(lambda_bpp=config.lambda_factor)
     
     # Create optimizer
     optimizer = Adam(
