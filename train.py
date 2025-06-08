@@ -224,9 +224,7 @@ def main():
     model = ViTCompressor(
         img_size=config.img_size,
         patch_size=config.patch_size,
-        embed_dim=config.embed_dim,
-        depth=config.depth,
-        num_heads=config.num_heads
+        embed_dim=config.embed_dim
     ).to(device)
     
     # Create dataloaders
