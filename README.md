@@ -45,6 +45,68 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Running on Google Colab
+
+You can easily run this project on Google Colab using the provided `main.ipynb` notebook. This is perfect for users who don't have access to a local GPU or want to experiment with the model quickly.
+
+### Quick Start with Colab
+
+1. **Open Google Colab**:
+   - Go to [Google Colab](https://colab.research.google.com)
+   - Sign in with your Google account
+
+2. **Upload the Notebook**:
+   - Click "File" → "Upload notebook"
+   - Upload the `main.ipynb` file from this repository
+   - OR clone the repository directly in Colab
+
+3. **Enable GPU**:
+   - Click "Runtime" → "Change runtime type"
+   - Select "GPU" as the Hardware accelerator
+   - Click "Save"
+
+4. **Run the Setup**:
+   - Execute the cells in sequence
+   - The notebook will automatically:
+     - Clone the repository
+     - Install dependencies
+     - Mount Google Drive (optional)
+     - Prepare datasets
+     - Start training
+
+### Colab Features
+
+- **Automatic Setup**: No manual installation required
+- **GPU Access**: Free GPU access for faster training
+- **Google Drive Integration**: Save models and outputs to your Drive
+- **Easy Testing**: Test the model on single images with built-in upload functionality
+- **Progress Monitoring**: Real-time training progress with TensorBoard
+
+### Important Notes for Colab Users
+
+- **Free Tier Limitations**: 
+  - Limited GPU hours (usually 12 hours per session)
+  - Sessions may disconnect after inactivity
+  - Consider Colab Pro for longer training sessions
+
+- **Memory Management**:
+  - Reduce batch size if you encounter out-of-memory errors
+  - Default batch size is optimized for Colab's GPU memory
+
+- **Saving Progress**:
+  - Always save checkpoints to Google Drive
+  - Use the provided save paths in the notebook
+  - Download important results before session ends
+
+### Testing on Single Images
+
+The Colab notebook includes functionality to test the trained model on individual images:
+
+1. Upload any image through the notebook interface
+2. The model will compress and reconstruct the image
+3. View comparison results with PSNR and BPP metrics
+4. Download the results to your local machine
+
 ## Dataset Preparation
 
 The code supports various datasets. For testing, you can use the Kodak dataset:

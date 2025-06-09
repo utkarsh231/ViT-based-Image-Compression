@@ -4,7 +4,9 @@ import random
 from glob import glob
 
 # Gather all jpg images from all CAT_XX folders
-cat_folders = [os.path.join('archive', 'cats', f'CAT_0{i}') for i in range(7)]
+#cat_folders = [os.path.join('archive', 'cats', f'CAT_0{i}') for i in range(7)]
+# for kaggle
+cat_folders = [os.path.join('/kaggle/input/cat-dataset', 'cats', f'CAT_0{i}') for i in range(7)]
 all_images = []
 for folder in cat_folders:
     all_images.extend(glob(os.path.join(folder, '*.jpg')))
