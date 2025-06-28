@@ -142,24 +142,43 @@ class HybridViTCompressor(nn.Module):
             nn.Conv2d(64, 3, kernel_size=3, stride=1, padding=1)  # Reconstruct original image
         )
     
+    def rgb_to_ycbcr(self, x):
+        # Convert RGB to YCbCr
+        matrix = torch.tensor([[0.299, 0.587, 0.114],
+                               [-0.168736, -0.331264, 0.5],
+                               [0.5, -0.418688, -0.081312]], device=x.device)
+        ycbcr = torch.tensordot(x, matrix, dims=([1], [1])).permute(0, 3, 1, 2)
+        ycbcr[:, 1:] += 128.0
+        return ycbcr
+
+    def ycbcr_to_rgb(self, x):
+        # Convert YCbCr to RGB
+        matrix = torch.tensor([[1.0, 0.0, 1.402],
+                               [1.0, -0.344136, -0.714136],
+                               [1.0, 1.772, 0.0]], device=x.device)
+        x[:, 1:] -= 128.0
+        rgb = torch.tensordot(x, matrix, dims=([1], [1])).permute(0, 3, 1, 2)
+        return rgb
+
     def forward(self, x):
-        # Extract features using convolutional layers
-        features = self.conv_layers(x)
-        
-        # Flatten features for Vision Transformer
-        b, c, h, w = features.shape
-        features = features.view(b, c, h * w).permute(0, 2, 1)  # Reshape to (batch, seq_len, embed_dim)
-        
-        # Pass through Vision Transformer
-        vit_features = self.vit(features)
-        
+        # Convert to YCbCr so that the network can compress chroma more aggressively
+        x_ycbcr = self.rgb_to_ycbcr(x)
+
+        # Extract features using convolutional layers (operating on YCbCr)
+        features = self.conv_layers(x_ycbcr)  # [B, embed_dim, H', W']
+
+        # Pass through Vision Transformer (timm will patchify internally)
+        vit_features = self.vit(features)  # [B, num_patches, embed_dim]
+
         # Reshape back to image dimensions
+        b, c, h, w = features.shape
         vit_features = vit_features.permute(0, 2, 1).view(b, c, h, w)
-        
-        # Reconstruct image using decoder
-        reconstructed = self.decoder(vit_features)
-        
-        return reconstructed, None  # Return reconstructed image and likelihoods (if needed)
+
+        # Reconstruct image (still YCbCr), then convert back to RGB
+        reconstructed_ycbcr = self.decoder(vit_features)
+        reconstructed_rgb = self.ycbcr_to_rgb(reconstructed_ycbcr)
+
+        return reconstructed_rgb, None  # likelihoods placeholder
 
 if __name__ == '__main__':
     dummy_input = torch.randn(1, 3, 256, 256)
