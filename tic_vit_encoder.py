@@ -108,6 +108,59 @@ class ViTCompressor(nn.Module):
         x_hat = self.decoder(y_hat)
         return x_hat, y_likelihoods
 
+class HybridViTCompressor(nn.Module):
+    def __init__(self, img_size: int, patch_size: int, embed_dim: int, num_layers: int = 12):
+        super(HybridViTCompressor, self).__init__()
+        
+        # Initial convolutional layers for feature extraction
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),  # First convolution
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),  # Downsampling
+            nn.ReLU(),
+            nn.Conv2d(128, embed_dim, kernel_size=3, stride=2, padding=1),  # Final feature extraction
+            nn.ReLU()
+        )
+        
+        # Vision Transformer for global context modeling
+        self.vit = VisionTransformer(
+            img_size=img_size // 4,  # Adjusted for downsampling
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+            depth=num_layers,
+            num_heads=8,
+            mlp_ratio=4.0,
+            qkv_bias=True
+        )
+        
+        # Reconstruction layers (decoder)
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(embed_dim, 128, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 3, kernel_size=3, stride=1, padding=1)  # Reconstruct original image
+        )
+    
+    def forward(self, x):
+        # Extract features using convolutional layers
+        features = self.conv_layers(x)
+        
+        # Flatten features for Vision Transformer
+        b, c, h, w = features.shape
+        features = features.view(b, c, h * w).permute(0, 2, 1)  # Reshape to (batch, seq_len, embed_dim)
+        
+        # Pass through Vision Transformer
+        vit_features = self.vit(features)
+        
+        # Reshape back to image dimensions
+        vit_features = vit_features.permute(0, 2, 1).view(b, c, h, w)
+        
+        # Reconstruct image using decoder
+        reconstructed = self.decoder(vit_features)
+        
+        return reconstructed, None  # Return reconstructed image and likelihoods (if needed)
+
 if __name__ == '__main__':
     dummy_input = torch.randn(1, 3, 256, 256)
     model = ViTCompressor()
