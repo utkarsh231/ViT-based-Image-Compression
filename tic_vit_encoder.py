@@ -134,11 +134,15 @@ class HybridViTCompressor(nn.Module):
         
         # Reconstruction layers (decoder)
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(embed_dim, 128, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.ConvTranspose2d(embed_dim, 256, kernel_size=3, stride=2, padding=1, output_padding=1),  # 16→32
             nn.ReLU(),
-            nn.ConvTranspose2d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.ConvTranspose2d(256, 128, kernel_size=3, stride=2, padding=1, output_padding=1),        # 32→64
             nn.ReLU(),
-            nn.Conv2d(64, 3, kernel_size=3, stride=1, padding=1)
+            nn.ConvTranspose2d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1),         # 64→128
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),          # 128→256
+            nn.ReLU(),
+            nn.Conv2d(32, 3, kernel_size=3, stride=1, padding=1)                                       # Final RGB
         )
     
     def rgb_to_ycbcr(self, x):
