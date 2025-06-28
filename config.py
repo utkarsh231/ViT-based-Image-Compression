@@ -15,6 +15,7 @@ class CompressionConfig:
     qkv_bias: bool = True
     drop_rate: float = 0.1  # Added dropout for regularization
     attn_drop_rate: float = 0.1
+    num_layers: int =12
     
     # Training
     batch_size: int = 8  # Reduced for laptop GPU
