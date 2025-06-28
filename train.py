@@ -259,12 +259,12 @@ def main():
     device = torch.device(config.device)
     
     # Initialize wandb
-    if config.use_wandb:
-        wandb.init(
-            project=config.project_name,
-            name=config.experiment_name,
-            config=vars(config)
-        )
+    # if config.use_wandb:
+    #     wandb.init(
+    #         project=config.project_name,
+    #         name=config.experiment_name,
+    #         config=vars(config)
+    #     )
     
     # Setup logging
     logger = setup_logging(config)
@@ -383,8 +383,8 @@ def main():
         )
     
     writer.close()
-    if config.use_wandb:
-        wandb.finish()
+    # if config.use_wandb:
+    #     wandb.finish()
     logger.info("Training completed!")
 
 if __name__ == '__main__':
