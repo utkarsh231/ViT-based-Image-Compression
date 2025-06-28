@@ -114,23 +114,22 @@ class HybridViTCompressor(nn.Module):
         
         # Initial convolutional layers for feature extraction
         self.conv_layers = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),  # First convolution
+            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),  # Downsampling
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
-            nn.Conv2d(128, embed_dim, kernel_size=3, stride=2, padding=1),  # Final feature extraction
+            nn.Conv2d(128, embed_dim, kernel_size=3, stride=2, padding=1),
             nn.ReLU()
         )
         
-        # Vision Transformer for global context modeling
-        self.vit = VisionTransformer(
-            img_size=img_size // 4,  # Adjusted for downsampling
+        # Use your own ViTEncoder that supports arbitrary input channels
+        self.vit = ViTEncoder(
+            img_size=img_size // 4,      # Adjusted for downsampling (stride 2 x 2)
             patch_size=patch_size,
+            in_chans=embed_dim,          # Match conv output channels
             embed_dim=embed_dim,
             depth=num_layers,
-            num_heads=8,
-            mlp_ratio=4.0,
-            qkv_bias=True
+            num_heads=8
         )
         
         # Reconstruction layers (decoder)
@@ -139,11 +138,10 @@ class HybridViTCompressor(nn.Module):
             nn.ReLU(),
             nn.ConvTranspose2d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1),
             nn.ReLU(),
-            nn.Conv2d(64, 3, kernel_size=3, stride=1, padding=1)  # Reconstruct original image
+            nn.Conv2d(64, 3, kernel_size=3, stride=1, padding=1)
         )
     
     def rgb_to_ycbcr(self, x):
-        # Convert RGB to YCbCr
         matrix = torch.tensor([[0.299, 0.587, 0.114],
                                [-0.168736, -0.331264, 0.5],
                                [0.5, -0.418688, -0.081312]], device=x.device)
@@ -152,7 +150,6 @@ class HybridViTCompressor(nn.Module):
         return ycbcr
 
     def ycbcr_to_rgb(self, x):
-        # Convert YCbCr to RGB
         matrix = torch.tensor([[1.0, 0.0, 1.402],
                                [1.0, -0.344136, -0.714136],
                                [1.0, 1.772, 0.0]], device=x.device)
@@ -161,23 +158,23 @@ class HybridViTCompressor(nn.Module):
         return rgb
 
     def forward(self, x):
-        # Convert to YCbCr so that the network can compress chroma more aggressively
         x_ycbcr = self.rgb_to_ycbcr(x)
-
-        # Extract features using convolutional layers (operating on YCbCr)
         features = self.conv_layers(x_ycbcr)  # [B, embed_dim, H', W']
 
-        # Pass through Vision Transformer (timm will patchify internally)
-        vit_features = self.vit(features)  # [B, num_patches, embed_dim]
+        # ViTEncoder expects [B, embed_dim, H', W']
+        vit_tokens = self.vit.patch_embed(features)  # [B, N, embed_dim]
+        vit_tokens = self.vit.pre_norm(vit_tokens)
+        vit_tokens = vit_tokens + self.vit.pos_embed
+        vit_tokens = self.vit.transformer(vit_tokens)
+        vit_tokens = self.vit.norm(vit_tokens)
 
-        # Reshape back to image dimensions
-        b, c, h, w = features.shape
-        vit_features = vit_features.permute(0, 2, 1).view(b, c, h, w)
+        # Reshape tokens back to feature map
+        B, N, D = vit_tokens.shape
+        grid_size = int(N ** 0.5)
+        vit_features = vit_tokens.transpose(1, 2).contiguous().view(B, D, grid_size, grid_size)
 
-        # Reconstruct image (still YCbCr), then convert back to RGB
         reconstructed_ycbcr = self.decoder(vit_features)
         reconstructed_rgb = self.ycbcr_to_rgb(reconstructed_ycbcr)
-
         return reconstructed_rgb, None  # likelihoods placeholder
 
 if __name__ == '__main__':
