@@ -103,7 +103,7 @@ from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 from pathlib import Path
 from typing import Dict, Optional, Tuple
-import wandb
+# import wandb
 from config import CompressionConfig
 from dataset import get_dataloaders
 from tic_vit_encoder import ViTCompressor
@@ -236,16 +236,16 @@ def train_epoch(
         })
         
         # Log to wandb
-        if config.use_wandb:
-            wandb.log({
-                'train/loss': loss.item(),
-                'train/psnr': metrics['psnr'],
-                'train/bpp': metrics['bpp'],
-                'train/grad_norm': grad_norm,
-                'train/learning_rate': current_lr,
-                'epoch': epoch,
-                'step': current_step
-            })
+        # if config.use_wandb:
+        #     wandb.log({
+        #         'train/loss': loss.item(),
+        #         'train/psnr': metrics['psnr'],
+        #         'train/bpp': metrics['bpp'],
+        #         'train/grad_norm': grad_norm,
+        #         'train/learning_rate': current_lr,
+        #         'epoch': epoch,
+        #         'step': current_step
+        #     })
     
     # Average metrics
     for k in epoch_metrics:
@@ -285,11 +285,11 @@ def validate(
         writer.add_scalar(f'val/{k}_epoch', val_metrics[k], epoch)
         
         # Log to wandb
-        if config.use_wandb:
-            wandb.log({
-                f'val/{k}': val_metrics[k],
-                'epoch': epoch
-            })
+        # if config.use_wandb:
+        #     wandb.log({
+        #         f'val/{k}': val_metrics[k],
+        #         'epoch': epoch
+        #     })
     
     return val_metrics
 
@@ -429,7 +429,7 @@ def main():
     writer.close()
     # if config.use_wandb:
     #     wandb.finish()
-    logger.info("Training completed!")
+    # logger.info("Training completed!")
 
 if __name__ == '__main__':
     main()
