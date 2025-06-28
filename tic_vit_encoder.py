@@ -109,7 +109,7 @@ class ViTCompressor(nn.Module):
         return x_hat, y_likelihoods
 
 class HybridViTCompressor(nn.Module):
-    def __init__(self, img_size: int, patch_size: int, embed_dim: int, num_layers: int = 12):
+    def __init__(self, img_size: int = 256, patch_size: int = 16, embed_dim: int = 384, num_layers: int = 12):
         super(HybridViTCompressor, self).__init__()
         
         # Initial convolutional layers for feature extraction
@@ -132,15 +132,21 @@ class HybridViTCompressor(nn.Module):
             num_heads=8
         )
         
-        # Decoder: Upsample 64 -> 128 -> 256
+        # Decoder: Upsample 4 -> 8 -> 16 -> 32 -> 64 -> 128 -> 256
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(embed_dim, 256, kernel_size=3, stride=2, padding=1, output_padding=1),  # 64 -> 128
+            nn.ConvTranspose2d(embed_dim, 512, kernel_size=3, stride=2, padding=1, output_padding=1),  # 4 -> 8
             nn.ReLU(),
-            nn.ConvTranspose2d(256, 128, kernel_size=3, stride=2, padding=1, output_padding=1),        # 128 -> 256
+            nn.ConvTranspose2d(512, 256, kernel_size=3, stride=2, padding=1, output_padding=1),        # 8 -> 16
             nn.ReLU(),
-            nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=1),
+            nn.ConvTranspose2d(256, 128, kernel_size=3, stride=2, padding=1, output_padding=1),        # 16 -> 32
             nn.ReLU(),
-            nn.Conv2d(64, 3, kernel_size=3, stride=1, padding=1)                                       # Final RGB
+            nn.ConvTranspose2d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1),         # 32 -> 64
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),          # 64 -> 128
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),          # 128 -> 256
+            nn.ReLU(),
+            nn.Conv2d(16, 3, kernel_size=3, stride=1, padding=1)                                       # Final RGB
         )
     
     def rgb_to_ycbcr(self, x):
@@ -164,7 +170,7 @@ class HybridViTCompressor(nn.Module):
         features = self.conv_layers(x_ycbcr)  # [B, embed_dim, 64, 64]
 
         # ViTEncoder expects [B, embed_dim, 64, 64]
-        vit_tokens = self.vit.patch_embed(features)  # [B, N, embed_dim]
+        vit_tokens = self.vit.patch_embed(features)  # [B, N, embed_dim], N=16 for 4x4 grid
         vit_tokens = self.vit.pre_norm(vit_tokens)
         vit_tokens = vit_tokens + self.vit.pos_embed
         vit_tokens = self.vit.transformer(vit_tokens)
@@ -172,8 +178,8 @@ class HybridViTCompressor(nn.Module):
 
         # Reshape tokens back to feature map
         B, N, D = vit_tokens.shape
-        grid_size = int(N ** 0.5)
-        vit_features = vit_tokens.transpose(1, 2).contiguous().view(B, D, grid_size, grid_size)  # [B, embed_dim, 64, 64]
+        grid_size = int(N ** 0.5)  # Should be 4
+        vit_features = vit_tokens.transpose(1, 2).contiguous().view(B, D, grid_size, grid_size)  # [B, embed_dim, 4, 4]
 
         reconstructed_ycbcr = self.decoder(vit_features)  # [B, 3, 256, 256]
         reconstructed_rgb = self.ycbcr_to_rgb(reconstructed_ycbcr)
