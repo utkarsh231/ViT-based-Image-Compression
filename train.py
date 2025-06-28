@@ -1,8 +1,45 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from timm.models.vision_transformer import VisionTransformer
+import os
+
+# ------------------------------------------------------------
+# NumPy 2.0 backward‑compat: many libs still reference `np.dtypes`.
+# Provide an alias so they keep working.
+# ------------------------------------------------------------
+import numpy as np
+if not hasattr(np, "dtypes"):
+    np.dtypes = np.dtype
 
 class HybridViTCompressor(nn.Module):
+    # ---------- colour‑space utilities ----------
+    @staticmethod
+    def rgb_to_ycbcr(x: torch.Tensor) -> torch.Tensor:
+        """
+        Convert a batch of RGB images ∈ [0,1] to YCbCr.
+        Args:
+            x: (B, 3, H, W) tensor in range [0,1]
+        Returns:
+            (B, 3, H, W) tensor (Y, Cb, Cr) also in [0,1]
+        """
+        r, g, b = x[:, 0:1], x[:, 1:2], x[:, 2:3]
+        y  = 0.299 * r + 0.587 * g + 0.114 * b
+        cb = -0.168736 * r - 0.331264 * g + 0.5 * b + 0.5
+        cr =  0.5 * r - 0.418688 * g - 0.081312 * b + 0.5
+        return torch.cat([y, cb, cr], dim=1)
+
+    @staticmethod
+    def ycbcr_to_rgb(x: torch.Tensor) -> torch.Tensor:
+        """
+        Inverse of `rgb_to_ycbcr`.
+        """
+        y, cb, cr = x[:, 0:1], x[:, 1:2] - 0.5, x[:, 2:3] - 0.5
+        r = y + 1.402 * cr
+        g = y - 0.344136 * cb - 0.714136 * cr
+        b = y + 1.772 * cb
+        return torch.cat([r, g, b], dim=1).clamp(0.0, 1.0)
+
     def __init__(self, img_size: int, patch_size: int, embed_dim: int, num_layers: int = 12):
         super(HybridViTCompressor, self).__init__()
         
@@ -24,7 +61,8 @@ class HybridViTCompressor(nn.Module):
             depth=num_layers,
             num_heads=8,
             mlp_ratio=4.0,
-            qkv_bias=True
+            qkv_bias=True,
+            in_chans=embed_dim           # <-- match feature‑map channels
         )
         
         # Reconstruction layers (decoder)
@@ -37,23 +75,24 @@ class HybridViTCompressor(nn.Module):
         )
     
     def forward(self, x):
-        # Extract features using convolutional layers
-        features = self.conv_layers(x)
+        # Convert to YCbCr so that the network can compress chroma more aggressively
+        x_ycbcr = self.rgb_to_ycbcr(x)
+
+        # Extract features using convolutional layers (operating on YCbCr)
+        features = self.conv_layers(x_ycbcr)
         
-        # Flatten features for Vision Transformer
         b, c, h, w = features.shape
-        features = features.view(b, c, h * w).permute(0, 2, 1)  # Reshape to (batch, seq_len, embed_dim)
-        
-        # Pass through Vision Transformer
+        # Pass through Vision Transformer (timm will patchify internally)
         vit_features = self.vit(features)
         
         # Reshape back to image dimensions
         vit_features = vit_features.permute(0, 2, 1).view(b, c, h, w)
         
-        # Reconstruct image using decoder
-        reconstructed = self.decoder(vit_features)
-        
-        return reconstructed, None  # Return reconstructed image and likelihoods (if needed)import os
+        # Reconstruct image (still YCbCr), then convert back to RGB
+        reconstructed_ycbcr = self.decoder(vit_features)
+        reconstructed_rgb   = self.ycbcr_to_rgb(reconstructed_ycbcr)
+
+        return reconstructed_rgb, None  # likelihoods placeholder
 import logging
 import torch
 import torch.nn as nn
@@ -287,7 +326,11 @@ def main():
     train_loader, val_loader = get_dataloaders(config)
     
     # Create loss function
-    criterion = CombinedLoss(lambda_bpp=config.lambda_factor)
+    criterion = CombinedLoss(
+        lambda_bpp=config.lambda_factor,
+        w_y=config.w_y,
+        w_c=config.w_c
+    )
     
     # Create optimizer
     optimizer = Adam(
