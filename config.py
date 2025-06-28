@@ -54,6 +54,9 @@ class CompressionConfig:
     project_name: str = "vit-compression"
     experiment_name: str = "laptop-training-2"
     
+    w_y: float = 1.0  # Weight for Y channel in loss
+    w_c: float = 1.0  # Weight for chroma channels in loss
+
     def __post_init__(self):
         assert self.img_size % self.patch_size == 0, "Image size must be divisible by patch size"
         assert self.embed_dim % self.num_heads == 0, "Embedding dimension must be divisible by number of heads"
@@ -66,4 +69,4 @@ class CompressionConfig:
         if torch.cuda.is_available():
             torch.backends.cudnn.benchmark = True
             torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True 
+            torch.backends.cudnn.allow_tf32 = True
