@@ -107,6 +107,7 @@ import wandb
 from config import CompressionConfig
 from dataset import get_dataloaders
 from tic_vit_encoder import ViTCompressor
+from tic_vit_encoder import HybridViTCompressor
 from loss import CombinedLoss
 
 def setup_logging(config: CompressionConfig) -> logging.Logger:

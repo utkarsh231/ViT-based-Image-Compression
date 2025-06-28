@@ -50,7 +50,7 @@ class RateDistortionLoss(nn.Module):
             "mse": mse_loss.item(),
             "bpp": bpp.item(),
             "psnr": psnr.item(),
-            "loss": total.item(),
+            "total_loss": total.item(),
         }
 
 
@@ -62,6 +62,8 @@ class CombinedLoss(nn.Module):
     def __init__(
         self,
         lambda_bpp: float = 0.1,
+        w_y: float = 1.0,
+        w_c: float = 1.0,
         alpha: float = 0.84,
         beta: float = 0.16,
         use_lpips: bool = False,
@@ -74,6 +76,8 @@ class CombinedLoss(nn.Module):
         self.use_lpips = use_lpips
         self.gamma_lpips = gamma_lpips
         self.mse = nn.MSELoss()
+        self.w_y = w_y
+        self.w_c = w_c
 
         if use_lpips:
             import lpips
@@ -105,7 +109,7 @@ class CombinedLoss(nn.Module):
         )
 
         # Rate term
-        bpp = _bpp_from_likelihoods(likelihoods, x.numel() / x.size(0))
+        bpp = _bpp_from_likelihoods(likelihoods, x.numel() / x.size(0)) if likelihoods is not None else torch.tensor(0.0, device=x.device)
         total = distortion + self.lambda_bpp * bpp
 
         # Metrics (detach to avoid extra graph traversals)
@@ -118,7 +122,7 @@ class CombinedLoss(nn.Module):
             "lpips_loss": lpips_loss.item() if self.use_lpips else 0.0,
             "distortion": distortion.item(),
             "bpp": bpp.item(),
-            "total": total.item(),
+            "total_loss": total.item(),
             "psnr": psnr.item(),
         }
         return total, metrics
